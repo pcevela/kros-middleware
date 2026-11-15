@@ -214,6 +214,13 @@ kros_recurring.py --config recurring.toml status
 
 Give the job its own client token with `read+issue+send+results`, and set `KM_ISSUE_ENABLED=true`.
 
+## Claude skill (`skills/kros-invoicing/`)
+
+`skills/kros-invoicing/SKILL.md` teaches an AI agent (Claude Code, Claude) to use this middleware: create an
+invoice from details the user gives, read invoices, modify invoices that were not sent yet (full overwrite
+with the exact response→upload field mapping), and request sending through the approval flow. Copy the folder
+into `.claude/skills/` (or `~/.claude/skills/`) and set `KROS_MW_URL` and `KROS_MW_TOKEN`.
+
 ## Security notes
 
 * Run it behind TLS only, and bind the container port to `127.0.0.1` (as the Quadlet does). Deploy it on a host
