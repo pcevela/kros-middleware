@@ -540,3 +540,77 @@ async def test_hash_fields_setting_adds_to_defaults(make_harness):
         h.kros.invoices[159] = invoice(printedNote="changed")
         r = await approve(h)
         assert r.status_code == 409 and not h.kros.sends()
+
+
+# ---------------------------------------------------------------------------- regressions from the Codex review
+
+
+async def test_upload_in_flight_blocks_approval_until_kros_reports(harness: Harness):
+    # An overwrite of FA 2026001 is accepted by KROS but not processed yet ...
+    r = await harness.post_json("/api/invoices", {"data": {"documentNumber": "2026001", "numberingSequence": "FA"}})
+    assert r.status_code == 202
+    request_id = r.json()["requestId"]
+    # ... so no approval may be created for that invoice ...
+    r = await request_send(harness)
+    assert r.status_code == 409 and r.json()["errorCode"] == "uploadInFlight"
+    # ... until the webhook reports the result.
+    raw, headers = signed(
+        {
+            "companyId": 1,
+            "entityType": 2,
+            "status": 200,
+            "requestId": request_id,
+            "results": {"entities": [{"index": 0, "status": 204}]},
+        }
+    )
+    assert (await harness.client.post("/webhooks/kros", content=raw, headers=headers)).status_code == 200
+    assert (await request_send(harness)).status_code == 202
+
+
+async def test_upload_in_flight_at_approval_time_blocks_send(harness: Harness):
+    await request_send(harness)
+    # Simulate an upload that slipped in (e.g. admitted just before the approval was created).
+    await harness.app.state.core.db.add_uploads([("fa", "2026001")], "2099-01-01T00:00:00+00:00")
+    r = await approve(harness)
+    assert r.status_code == 409
+    assert not harness.kros.sends()
+    status = await harness.client.get(
+        f"/results/approvals/{urlsplit(harness.last_link()).path.rsplit('/', 1)[1]}", headers=harness.bearer()
+    )
+    assert status.json()["status"] == "blocked"
+
+
+async def test_tightened_policy_applies_to_existing_approvals(harness: Harness):
+    import dataclasses
+
+    core = harness.app.state.core
+    await request_send(harness)
+    core.s = dataclasses.replace(core.s, send_mode="off")
+    assert (await approve(harness)).status_code == 409
+    assert not harness.kros.sends()
+
+    harness.kros.invoices[160] = invoice(160, documentNumber="2026002")
+    core.s = dataclasses.replace(core.s, send_mode="approval")
+    await request_send(harness, invoice_id=160)
+    core.s = dataclasses.replace(core.s, allowed_ibans=["SK0000000000000000000000"])
+    assert (await approve(harness)).status_code == 409
+    assert not harness.kros.sends()
+
+
+async def test_pending_cap_holds_under_concurrency(make_harness):
+    async with make_harness(KM_APPROVAL_MAX_PENDING="1") as h:
+        for i in range(160, 168):
+            h.kros.invoices[i] = invoice(i, documentNumber=str(2026000 + i))
+        results = await asyncio.gather(*[request_send(h, invoice_id=i) for i in range(160, 168)])
+        codes = sorted(r.status_code for r in results)
+        assert codes.count(202) == 1, codes
+        assert set(codes) <= {202, 429}
+
+
+async def test_event_limit_must_be_in_range(make_harness):
+    tokens = f"agent:{AGENT_TOKEN}:read+issue+send+results+events"
+    async with make_harness(KM_CLIENT_TOKENS=tokens) as h:
+        for limit in ("-1", "0", "501"):
+            r = await h.client.get(f"/results/events?limit={limit}", headers=h.bearer())
+            assert r.status_code == 400, limit
+        assert (await h.client.get("/results/events?limit=500", headers=h.bearer())).status_code == 200

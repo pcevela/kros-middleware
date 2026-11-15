@@ -209,6 +209,7 @@ class Settings:
     max_body_bytes: int
 
     approval_ttl_hours: int
+    upload_settle_seconds: int
     approval_max_pending: int
     approval_auth: str
     approver_credentials: list[Credential] = field(repr=False)
@@ -487,6 +488,7 @@ def load_settings(environ: dict[str, str] | None = None) -> Settings:
         max_body_bytes=_int("MAX_BODY_BYTES", env, 1024 * 1024, minimum=1024, maximum=12 * 1024 * 1024),
         approval_ttl_hours=_int("APPROVAL_TTL_HOURS", env, 24, minimum=1, maximum=24 * 14),
         approval_max_pending=_int("APPROVAL_MAX_PENDING", env, 20, minimum=1),
+        upload_settle_seconds=_int("UPLOAD_SETTLE_SECONDS", env, 3600, minimum=60, maximum=86400),
         approval_auth=approval_auth,
         approver_credentials=approver_credentials,
         # Extra fields are added; the defaults (everything shown on the approval page) always stay bound.

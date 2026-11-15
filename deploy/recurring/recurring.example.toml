@@ -1,0 +1,69 @@
+# kros-recurring example configuration. Copy, fill in, chmod 600.
+lock_file = "/home/CHANGE/kros-recurring/kros-recurring.lock"
+journal_file = "/home/CHANGE/kros-recurring/journal.json"
+# allowed_vat_rates = ["23", "19", "5", "0"]
+
+[middleware]
+base_url = "http://127.0.0.1:8080"        # the middleware; https://... when remote
+token_file = "/home/CHANGE/kros-recurring/client_token"   # client with read+issue+send+results
+result_timeout = 300
+poll_interval = 5
+
+[notify]
+ntfy_url = "https://ntfy.example.com"
+ntfy_topic = "kros"
+ntfy_token_file = "/home/CHANGE/kros-recurring/ntfy_token"
+title_prefix = "[kros-recurring]"
+
+[numbering]
+sequence = "FV"          # KROS numbering sequence code
+prefix = "FV$YY"         # document numbers look like FV260037
+counter_digits = 4
+
+[defaults]
+due_days = 14
+vat_payer_type = 1       # 0 non-payer, 1 payer, 2 registered under §7/7a
+culture = "sk-SK"
+currency = "EUR"
+opening_text = "Fakturujeme Vám za dodaný tovar alebo služby:"
+closing_text = ""
+registration_court_text = "Example court registration text"
+payment_type = "Bankový prevod"
+bank_iban = "SK0000000000000000000000"
+bank_swift = "XXXXSKBX"
+einvoice_from = "2027-01-01"   # Slovak mandatory B2B e-invoicing
+
+[my_company]
+registrationId = "00000000"
+taxId = "0000000000"
+vatId = "SK0000000000"
+email = "billing@example.com"
+[my_company.address]
+businessName = "Example Supplier s.r.o."
+street = "Street 1"
+postCode = "00000"
+city = "City"
+country = "Slovensko"
+
+[[invoice]]
+key = "example-customer"
+enabled = true
+# variable_symbol = "1234"     # fixed VS; omit to use the invoice number
+[invoice.partner]
+registrationId = "00000000"
+taxId = "0000000000"
+vatId = "SK0000000000"
+email = "invoices@customer.example"
+[invoice.partner.address]
+businessName = "Example Customer s.r.o."
+street = "Street 2"
+postCode = "00000"
+city = "City"
+country = "Slovensko"
+
+[[invoice.items]]
+# placeholders: $MM (01-12), $M (1-12), $YYYY, $YY
+name = "Monthly fee for $MM/$YYYY"
+amount = 1
+unit_price = "150.00"   # net, per unit
+vat_rate = "23"

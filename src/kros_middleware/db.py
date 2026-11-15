@@ -76,6 +76,19 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS ix_audit_at ON audit_log(at);
 CREATE INDEX IF NOT EXISTS ix_audit_request ON audit_log(request_id);
+
+-- Uploads that name a document number, tracked until KROS reports the result, so an
+-- approval can never be decided while a write to the same invoice is still in flight.
+CREATE TABLE IF NOT EXISTS uploads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id TEXT,
+    doc_sequence TEXT NOT NULL,
+    doc_number TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    done_at TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_uploads_request ON uploads(request_id);
+CREATE INDEX IF NOT EXISTS ix_uploads_open ON uploads(done_at, created_at);
 """
 
 
@@ -202,6 +215,73 @@ class Database:
                 raise
 
         await self.run(_ins)
+
+    async def create_approval_capped(self, row: dict[str, Any], max_pending: int) -> bool:
+        """Insert an approval unless max_pending unexpired approvals are already open (one transaction)."""
+
+        def _ins(conn):
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    "UPDATE approvals SET status = 'expired' WHERE invoice_id = ? AND status = 'pending' "
+                    "AND expires_at <= ?",
+                    (row["invoice_id"], row["created_at"]),
+                )
+                pending = conn.execute(
+                    "SELECT COUNT(*) FROM approvals WHERE status = 'pending' AND expires_at > ?", (row["created_at"],)
+                ).fetchone()[0]
+                if pending >= max_pending:
+                    conn.execute("ROLLBACK")
+                    return False
+                _insert_approval(conn, row)
+                conn.execute("COMMIT")
+                return True
+            except BaseException:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+                raise
+
+        return await self.run(_ins)
+
+    # ------------------------------------------------------------------ in-flight uploads
+    async def add_uploads(self, keys: list[tuple[str, str]], now: str) -> list[int]:
+        def _ins(conn):
+            ids = []
+            for seq, num in keys:
+                cur = conn.execute(
+                    "INSERT INTO uploads (doc_sequence, doc_number, created_at) VALUES (?, ?, ?)", (seq, num, now)
+                )
+                ids.append(cur.lastrowid)
+            return ids
+
+        return await self.run(_ins)
+
+    async def settle_uploads(self, ids: list[int], request_id: str | None, done_at: str | None) -> None:
+        def _upd(conn):
+            conn.executemany(
+                "UPDATE uploads SET request_id = ?, done_at = ? WHERE id = ?", [(request_id, done_at, i) for i in ids]
+            )
+
+        if ids:
+            await self.run(_upd)
+
+    async def finish_request_uploads(self, request_id: str, now: str) -> None:
+        await self.run(
+            lambda conn: conn.execute(
+                "UPDATE uploads SET done_at = ? WHERE request_id = ? AND done_at IS NULL", (now, request_id)
+            )
+        )
+
+    async def open_upload_keys(self, not_before: str) -> list[tuple[str, str]]:
+        return await self.run(
+            lambda conn: [
+                (r[0], r[1])
+                for r in conn.execute(
+                    "SELECT doc_sequence, doc_number FROM uploads WHERE done_at IS NULL AND created_at > ?",
+                    (not_before,),
+                ).fetchall()
+            ]
+        )
 
     async def get_approval(self, approval_id: str) -> dict[str, Any] | None:
         def _q(conn):
@@ -385,6 +465,7 @@ class Database:
             counts = {
                 "webhook_events": conn.execute("DELETE FROM webhook_events WHERE received_at < ?", (cutoff,)).rowcount,
                 "audit_log": conn.execute("DELETE FROM audit_log WHERE at < ?", (cutoff,)).rowcount,
+                "uploads": conn.execute("DELETE FROM uploads WHERE created_at < ?", (cutoff,)).rowcount,
                 # Never purge approvals that are still in flight.
                 "approvals": conn.execute(
                     """DELETE FROM approvals WHERE created_at < ?

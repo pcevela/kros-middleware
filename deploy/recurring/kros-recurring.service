@@ -1,0 +1,15 @@
+# systemd user unit: ~/.config/systemd/user/kros-recurring.service
+[Unit]
+Description=kros-recurring: issue the recurring monthly invoices
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=TZ=Europe/Bratislava
+ExecStart=/usr/bin/python3 %h/kros-recurring/kros_recurring.py --config %h/kros-recurring/recurring.toml run
+# Generous: waiting for KROS webhook results can take a few minutes per invoice.
+TimeoutStartSec=30min
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077

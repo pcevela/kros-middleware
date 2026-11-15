@@ -1,0 +1,15 @@
+# systemd user unit: ~/.config/systemd/user/kros-recurring.timer
+# Runs on the last day of every month in the morning, so invoices (and from 2027 e-invoices)
+# are issued and approved on their issue date.
+[Unit]
+Description=Issue recurring invoices on the last day of the month
+
+[Timer]
+OnCalendar=*-*~01 07:30:00 Europe/Bratislava
+# After downtime the missed run happens at boot; the job then refuses (wrong date) and
+# alerts with the exact command to issue the previous month late.
+Persistent=true
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target

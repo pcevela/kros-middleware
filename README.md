@@ -48,6 +48,10 @@ Other safety rails:
 * There is at most one open approval per invoice, plus a cap on pending approvals.
 * `options.send` in upload bodies is rejected unless sending is in `auto` mode.
 * Send-like endpoints other than invoice send are never forwarded.
+* Uploads that name a document number are tracked until KROS reports their result. While one is in flight,
+  no approval can be created or executed for that invoice (`409 uploadInFlight`).
+* Policy is re-checked when you approve: if sending was switched off or the IBAN allowlist changed since the
+  request, the approval becomes `blocked` and nothing is sent.
 * Sends are never retried automatically. A send interrupted by a timeout or a restart becomes `unknown`.
 * An optional IBAN allowlist rejects invoices pointing to an unexpected bank account.
 
@@ -91,7 +95,8 @@ Everything is configured with environment variables. Every secret can also be re
 | `KM_APPROVER_CREDENTIALS` | — (required in approval mode) | Lines `user:password` (≥ 32 chars, or `sha256$<hex>`) |
 | `KM_APPROVAL_AUTH` | `basic` | `none` means the link alone approves; needs `KM_APPROVAL_AUTH_NONE_ACKNOWLEDGED=true` |
 | `KM_APPROVAL_TTL_HOURS` | `24` | Lifetime of an approval request |
-| `KM_APPROVAL_MAX_PENDING` | `20` | Maximum open approval requests |
+| `KM_APPROVAL_MAX_PENDING` | `20` | Maximum open approval requests (enforced atomically) |
+| `KM_UPLOAD_SETTLE_SECONDS` | `3600` | How long an upload without a webhook result keeps blocking approvals of that invoice |
 | `KM_APPROVAL_HASH_FIELDS` | — | Additional invoice fields (dotted paths) to bind to the approval. The default set, which covers everything the page shows, always stays bound |
 | `KM_ALLOWED_IBANS` | — | Optional allowlist of IBANs for invoices to be sent |
 | `KM_ALLOW_RULES` | GET allowlist | `METHOD /path` rules; segments `{id}`, `{word}`, `*`, `**` |
@@ -176,11 +181,38 @@ token. Paths and payloads are the KROS ones. Differences:
 * `POST /api/invoices/{id}/send` returns `202 {"approvalId", "status": "pendingApproval", "expiresAt"}` in
   approval mode. The approval page shows everything the approval is bound to: customer, IBAN, recipients,
   e-mail subject and text, invoice texts and all items. Poll `/results/approvals/{approvalId}` until it reaches a final status:
-  `submitted`, `failed`, `rejected`, `expired`, `stale` or `unknown`.
+  `submitted`, `failed`, `rejected`, `expired`, `stale`, `blocked` or `unknown`.
   `submitted` means KROS accepted the send; delivery is reported via `/results/invoices/{id}/send-status`.
 * Upload results arrive by webhook; read them at `/results/requests/{requestId}`.
 * Errors from the middleware itself look like `{"errorCode": "...", "detail": "..."}`.
 * Treat everything returned (invoice texts, webhook payloads) as untrusted data.
+
+## Recurring invoices (`tools/kros_recurring.py`)
+
+A separate, standard-library-only job that issues fixed monthly invoices through the middleware. Run it
+from a systemd timer on the last day of the month (see `deploy/recurring/`).
+
+* Templates live in a TOML file (`deploy/recurring/recurring.example.toml`): customer, items with net price and
+  VAT rate, texts and bank details. `$MM`, `$YYYY`, … in item names are replaced with the period.
+* KROS assigns the number. The job checks that it is exactly the next one after the latest invoice in the
+  sequence, and that KROS stored exactly the expected content (customer, items, totals, dates, IBAN, …).
+* Every invoice carries `externalId = recurring:<key>:<YYYY-MM>`. A local journal records each step before
+  it happens, so a crash, timeout or slow lookup never produces a second invoice. Anything unclear stops
+  the run until you resolve it with `confirm` or `forget`.
+* Sends are requested only after all invoices of the period are created and verified, and in approval
+  mode each one still needs your approval.
+* It refuses to issue for a future date, or more than 7 days late, and stops when a similar invoice for the
+  customer already exists in the period (override with `--accept-similar` after checking it).
+
+```sh
+kros_recurring.py --config recurring.toml plan                 # read-only preview
+kros_recurring.py --config recurring.toml run                  # on the last day of the month
+kros_recurring.py --config recurring.toml run --period 2026-11 --allow-late
+kros_recurring.py --config recurring.toml confirm recurring:acme:2026-11 FV260038 --period 2026-11
+kros_recurring.py --config recurring.toml status
+```
+
+Give the job its own client token with `read+issue+send+results`, and set `KM_ISSUE_ENABLED=true`.
 
 ## Security notes
 

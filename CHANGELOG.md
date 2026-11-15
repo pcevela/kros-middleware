@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0
+
+* New: `tools/kros_recurring.py`, a recurring monthly invoicing job with a crash-safe journal, number and
+  content verification, and two-phase sending; systemd units and an example config in `deploy/recurring/`.
+* Security: uploads naming a document number are tracked until KROS reports the result; approvals for that
+  invoice are refused or blocked meanwhile (fixes a race where an in-flight overwrite could change an
+  invoice between review and send).
+* Security: send mode and IBAN allowlist are re-checked when an approval is executed (new status `blocked`).
+* Security: the pending-approval cap is enforced in the same transaction as the insert.
+* Security: `/results/events` rejects `limit` outside 1–500 and negative `afterId`.
+
 ## 0.1.0 — unreleased
 
 First version:

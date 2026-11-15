@@ -236,6 +236,8 @@ class Core:
         self.approver_limiter = FailureLimiter(settings.auth_failures_per_minute)
         # Bound concurrent JSON parsing of large bodies.
         self.body_slots = asyncio.Semaphore(4)
+        # Serialises "may this write go ahead?" against "may this approval be created?".
+        self.write_lock = asyncio.Lock()
         self.template = load_template(settings.template_dir)
         self.labels = load_labels(settings.template_dir)
         self._retention_task: asyncio.Task | None = None
@@ -394,9 +396,26 @@ class Core:
                 or not (isinstance(data, dict) or (isinstance(data, list) and all(isinstance(d, dict) for d in data)))
             ):
                 raise HTTPError(400, "invalidBodyShape", 'expected {"data": object} or {"data": [objects]}')
-        await self.check_frozen(body)
+        keys = document_keys(body)
+        async with self.write_lock:
+            await self.check_frozen(body)
+            upload_ids = await self.db.add_uploads(keys, iso(utcnow())) if keys else []
         payload = await asyncio.to_thread(_serialise, body)
-        return await self.forward(client, method, upstream_path, query, payload, request)
+        try:
+            response = await self.forward(client, method, upstream_path, query, payload, request)
+        except HTTPError:
+            # Transport error: KROS may or may not process it; keep it open until it settles.
+            raise
+        request_id = None
+        if response.status_code == 202:
+            with contextlib.suppress(ValueError, AttributeError, TypeError):
+                rid = json.loads(response.body).get("requestId")
+                request_id = str(rid) if rid else None
+        if request_id:
+            await self.db.settle_uploads(upload_ids, request_id, None)  # closed by the webhook
+        elif response.status_code < 500 and response.status_code not in (408, 429):
+            await self.db.settle_uploads(upload_ids, None, iso(utcnow()))  # definitely not processed
+        return response
 
     def json_body(self, request: Request, raw: bytes, allow_empty: bool) -> Any:
         if not raw.strip():
@@ -411,6 +430,16 @@ class Core:
         ctype = request.headers.get("content-type", "").split(";")[0].strip().lower()
         if ctype != "application/json":
             raise HTTPError(415, "jsonRequired")
+
+    async def upload_in_flight(self, sequence: Any, number: Any) -> bool:
+        key = ap.document_key(sequence, number)
+        if key is None:
+            return False
+        not_before = iso(utcnow() - timedelta(seconds=self.s.upload_settle_seconds))
+        for seq, num in await self.db.open_upload_keys(not_before):
+            if num == key[1] and (not seq or not key[0] or seq == key[0]):
+                return True
+        return False
 
     async def check_frozen(self, body: Any) -> None:
         """Refuse to overwrite an invoice that is under approval or has been submitted for sending."""
@@ -502,7 +531,7 @@ class Core:
             raise HTTPError(
                 409, "approvalAlreadyOpen", extra={"approvalId": existing["id"], "status": existing["status"]}
             )
-        if await self.db.count_pending(iso(now)) >= self.s.approval_max_pending:
+        if await self.db.count_pending(iso(now)) >= self.s.approval_max_pending:  # fast path; enforced below
             raise HTTPError(429, "tooManyPendingApprovals")
 
         invoice = await self.fetch_invoice(invoice_id)
@@ -529,10 +558,15 @@ class Core:
             "created_at": iso(now),
             "expires_at": iso(expires),
         }
-        try:
-            await self.db.create_approval(row)
-        except sqlite3.IntegrityError as exc:
-            raise HTTPError(409, "approvalAlreadyOpen") from exc
+        async with self.write_lock:
+            if await self.upload_in_flight(invoice.get("numberingSequence"), invoice.get("documentNumber")):
+                raise HTTPError(409, "uploadInFlight", "an upload of this invoice is still being processed by KROS")
+            try:
+                created = await self.db.create_approval_capped(row, self.s.approval_max_pending)
+            except sqlite3.IntegrityError as exc:
+                raise HTTPError(409, "approvalAlreadyOpen") from exc
+        if not created:
+            raise HTTPError(429, "tooManyPendingApprovals")
         await self.audit(client.name, "POST", path, [], 202, None, payload, f"approval {approval_id} requested")
         link = f"{self.s.public_base_url}{self.s.approvals_prefix}/{approval_id}?token={token}"
         self.notifier.fire(
@@ -681,6 +715,19 @@ class Core:
             approval = await self.db.get_approval(approval_id) or approval
             self.notify_decided(approval, "stale", "the invoice changed after approval was requested; nothing was sent")
             return self.page(approval, token, status=409)
+        # Re-apply the current policy: it may have been tightened since the request was made.
+        blocked = None
+        if self.s.send_mode == "off":
+            blocked = "sending is disabled (KM_SEND_MODE=off)"
+        elif ap.summary(invoice, send_body, self.s.allowed_ibans)["iban_allowed"] is False:
+            blocked = "the invoice IBAN is not in KM_ALLOWED_IBANS"
+        elif await self.upload_in_flight(invoice.get("numberingSequence"), invoice.get("documentNumber")):
+            blocked = "an upload of this invoice is still being processed by KROS"
+        if blocked:
+            await self.db.finish_approval(approval_id, "approved", "blocked", None, blocked)
+            approval = await self.db.get_approval(approval_id) or approval
+            self.notify_decided(approval, "blocked", f"{blocked}; nothing was sent")
+            return self.page(approval, token, status=409)
         if not await self.db.transition_approval(approval_id, "approved", "sending", iso(utcnow())):
             return self.page(await self.db.get_approval(approval_id) or approval, token, status=409)
 
@@ -720,6 +767,8 @@ class Core:
         if not isinstance(event, dict):
             raise HTTPError(400, "invalidPayload")
         row = extract_event(event, raw)
+        if row["request_id"]:
+            await self.db.finish_request_uploads(row["request_id"], iso(utcnow()))
         if await self.db.insert_event(row):
             self.notify_event(event, row)
         return JSONResponse({"ok": True}, headers=SECURITY_HEADERS)
@@ -800,8 +849,10 @@ class Core:
             since = _normalise_since(q.get("since"))
             entity = q.get("entityType")
             try:
-                limit = min(int(q.get("limit") or 100), 500)
+                limit = int(q.get("limit") or 100)
                 after_id = int(q.get("afterId") or 0)
+                if not 1 <= limit <= 500 or after_id < 0:
+                    raise ValueError("out of range")
                 entity_type = int(entity) if entity else None
             except ValueError as exc:
                 raise HTTPError(400, "invalidQuery") from exc
@@ -838,6 +889,18 @@ def _normalise_since(value: str | None) -> str:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return iso(parsed)
+
+
+def document_keys(body: Any) -> list[tuple[str, str]]:
+    """Normalised (sequence, number) of every document in an upload body that names a number."""
+    data = body.get("data") if isinstance(body, dict) else None
+    keys = []
+    for doc in data if isinstance(data, list) else [data]:
+        if isinstance(doc, dict) and get_ci(doc, "documentNumber") not in (None, ""):
+            key = ap.document_key(get_ci(doc, "numberingSequence"), get_ci(doc, "documentNumber"))
+            if key is not None:
+                keys.append(key)
+    return keys
 
 
 def _serialise(body: Any) -> bytes:
