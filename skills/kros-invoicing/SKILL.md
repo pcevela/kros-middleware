@@ -20,10 +20,19 @@ Never invent field or endpoint names. If something is not in the spec, say so an
 
 ## Connection
 
-| Setting | Where it comes from |
-| --- | --- |
-| Base URL | `KROS_MW_URL` env var, or ask the user (e.g. `https://kros-mw.example.com`) |
-| Token | `KROS_MW_TOKEN` env var, or ask the user. Never print it, write it into files you deliver, or put it in URLs |
+Before the first request, get the base URL and the client token, in this order:
+
+1. **Base URL**: `KROS_MW_URL` env var. Otherwise ask the user (e.g. `https://kros-mw.example.com`).
+2. **Token**:
+   1. the `KROS_MW_TOKEN` env var, if set;
+   2. otherwise a location the user pointed to (a file path, a secret store entry, a password manager
+      item). Read it from there, strip surrounding whitespace, and don't copy it anywhere else;
+   3. otherwise **ask the user for the token** (or where to find it) and wait. Don't guess, don't search
+      the disk or other projects for tokens, and don't continue without one.
+
+   Ask also when a token you found is rejected with `401 {"errorCode": "unauthorized"}`. It may be
+   wrong or revoked. Never print the token, never write it into files you deliver or commit, never put it
+   in URLs or logs, and keep it only for the current task.
 
 Every request needs:
 
