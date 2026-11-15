@@ -122,7 +122,12 @@ Everything is configured with environment variables. Every secret can also be re
 
 ## Deployment (rootless Podman + nginx)
 
-1. **Build** the image on the host:
+1. **Get the image.** Release images are published to the GitHub Container Registry for every version tag:
+   ```sh
+   podman pull ghcr.io/pcevela/kros-middleware:v0.1.0    # or :latest for the newest release
+   ```
+   Pin a version in production. Alternatively, build it yourself from a checkout and set
+   `Image=localhost/kros-middleware:latest` in the Quadlet:
    ```sh
    podman build --format docker -t localhost/kros-middleware:latest -f Containerfile .
    ```
@@ -149,6 +154,9 @@ Everything is configured with environment variables. Every secret can also be re
    systemctl --user daemon-reload && systemctl --user start kros-middleware
    loginctl enable-linger "$USER"   # keep running without a login session
    ```
+   For automatic updates within a release line, point `Image=` at a moving tag, uncomment
+   `AutoUpdate=registry` and enable `podman-auto-update.timer` (`systemctl --user enable --now podman-auto-update.timer`).
+   Sending invoices is business-critical, so pinned versions with deliberate upgrades are the safer default.
 5. **nginx:** adapt `deploy/nginx/kros-middleware.conf` (server name, certificates) and reload.
 6. **Check:** `curl https://<your host>/healthz`, then `curl -H "Authorization: Bearer <client token>"
    https://<your host>/api/auth/check`.

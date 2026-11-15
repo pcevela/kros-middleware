@@ -10,9 +10,10 @@ After=network-online.target
 
 [Container]
 ContainerName=kros-middleware
-# Built locally (podman build -t localhost/kros-middleware:latest -f Containerfile .)
-# or pulled from your registry.
-Image=localhost/kros-middleware:latest
+# Published release image; pin a version. To use a local build instead:
+#   podman build --format docker -t localhost/kros-middleware:latest -f Containerfile .
+#   Image=localhost/kros-middleware:latest
+Image=ghcr.io/pcevela/kros-middleware:v0.1.0
 
 # Only reachable from the host; nginx terminates TLS and proxies to it.
 PublishPort=127.0.0.1:8080:8080
@@ -45,7 +46,7 @@ PodmanArgs=--memory=256m --pids-limit=128
 HealthCmd=python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=4).status == 200 else 1)"
 HealthInterval=30s
 HealthOnFailure=kill
-# Uncomment when pulling from a registry and using podman-auto-update.timer:
+# With a moving tag (e.g. :latest) and podman-auto-update.timer enabled:
 # AutoUpdate=registry
 
 [Service]
