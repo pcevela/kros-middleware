@@ -1,0 +1,56 @@
+# Rootless Podman Quadlet unit.
+# Install to ~/.config/containers/systemd/ and run:
+#   systemctl --user daemon-reload && systemctl --user start kros-middleware
+# See README.md -> "Deployment" for creating the secrets and the environment file.
+
+[Unit]
+Description=kros-middleware (KROS OpenAPI proxy and webhook receiver)
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+ContainerName=kros-middleware
+# Built locally (podman build -t localhost/kros-middleware:latest -f Containerfile .)
+# or pulled from your registry.
+Image=localhost/kros-middleware:latest
+
+# Only reachable from the host; nginx terminates TLS and proxies to it.
+PublishPort=127.0.0.1:8080:8080
+
+# Non-secret settings.
+EnvironmentFile=%h/.config/kros-middleware/kros-middleware.env
+
+# Secrets are mounted as files (mode 0400) and read through the *_FILE variables.
+Secret=kros-upstream-token,type=mount,target=/run/secrets/upstream_token,mode=0400,uid=1001
+Secret=kros-client-tokens,type=mount,target=/run/secrets/client_tokens,mode=0400,uid=1001
+Secret=kros-webhook-secret,type=mount,target=/run/secrets/webhook_secret,mode=0400,uid=1001
+Secret=kros-approvers,type=mount,target=/run/secrets/approvers,mode=0400,uid=1001
+# Optional: Secret=kros-ntfy-token,type=mount,target=/run/secrets/ntfy_token,mode=0400,uid=1001
+# Optional: Secret=kros-smtp-password,type=mount,target=/run/secrets/smtp_password,mode=0400,uid=1001
+Environment=KM_UPSTREAM_TOKEN_FILE=/run/secrets/upstream_token
+Environment=KM_CLIENT_TOKENS_FILE=/run/secrets/client_tokens
+Environment=KM_WEBHOOK_SECRET_FILE=/run/secrets/webhook_secret
+Environment=KM_APPROVER_CREDENTIALS_FILE=/run/secrets/approvers
+
+Volume=kros-middleware-data.volume:/data:Z,U
+
+# Hardening.
+User=1001
+ReadOnly=true
+Tmpfs=/tmp:rw,size=16m,mode=1777
+DropCapability=ALL
+NoNewPrivileges=true
+PodmanArgs=--memory=256m --pids-limit=128
+
+HealthCmd=python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=4).status == 200 else 1)"
+HealthInterval=30s
+HealthOnFailure=kill
+# Uncomment when pulling from a registry and using podman-auto-update.timer:
+# AutoUpdate=registry
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target
