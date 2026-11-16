@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+* Security: an upload without a KROS result keeps blocking send approvals of that invoice until the result
+  webhook arrives or an operator resolves it (`python -m kros_middleware uploads list|resolve`). Previously
+  it stopped blocking after `KM_UPLOAD_SETTLE_SECONDS` (now removed and ignored), so an overwrite processed
+  late by KROS could change an invoice after it was reviewed. Retention no longer deletes open uploads.
+* Security: a result webhook that arrives before the middleware records the upload's `requestId` now closes
+  the upload. Storing the event and closing uploads, and recording the `requestId` and checking for an
+  already stored result, each happen in one transaction.
 * Skill: looks for an existing URL and token before asking (project instructions, `KROS_MW_URL` /
   `KROS_MW_TOKEN`, a token attached by an outbound proxy such as a Claude network secret), and never repeats
   a pasted token in commands.

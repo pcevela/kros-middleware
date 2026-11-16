@@ -435,8 +435,7 @@ class Core:
         key = ap.document_key(sequence, number)
         if key is None:
             return False
-        not_before = iso(utcnow() - timedelta(seconds=self.s.upload_settle_seconds))
-        for seq, num in await self.db.open_upload_keys(not_before):
+        for seq, num in await self.db.open_upload_keys():
             if num == key[1] and (not seq or not key[0] or seq == key[0]):
                 return True
         return False
@@ -560,7 +559,12 @@ class Core:
         }
         async with self.write_lock:
             if await self.upload_in_flight(invoice.get("numberingSequence"), invoice.get("documentNumber")):
-                raise HTTPError(409, "uploadInFlight", "an upload of this invoice is still being processed by KROS")
+                raise HTTPError(
+                    409,
+                    "uploadInFlight",
+                    "an upload of this invoice has no result from KROS yet; wait for it, or check the invoice in KROS"
+                    " and resolve the upload (python -m kros_middleware uploads)",
+                )
             try:
                 created = await self.db.create_approval_capped(row, self.s.approval_max_pending)
             except sqlite3.IntegrityError as exc:
@@ -767,9 +771,7 @@ class Core:
         if not isinstance(event, dict):
             raise HTTPError(400, "invalidPayload")
         row = extract_event(event, raw)
-        if row["request_id"]:
-            await self.db.finish_request_uploads(row["request_id"], iso(utcnow()))
-        if await self.db.insert_event(row):
+        if await self.db.insert_event_and_finish_uploads(row, iso(utcnow())):
             self.notify_event(event, row)
         return JSONResponse({"ok": True}, headers=SECURITY_HEADERS)
 

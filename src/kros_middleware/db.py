@@ -257,30 +257,98 @@ class Database:
         return await self.run(_ins)
 
     async def settle_uploads(self, ids: list[int], request_id: str | None, done_at: str | None) -> None:
+        """Attach KROS's requestId to tracked uploads, or close them (``done_at``) when KROS won't process them.
+
+        The result webhook may arrive before the forwarding code gets here. Setting the requestId and
+        checking for an already stored result happen in one transaction, and the webhook stores its event
+        and closes uploads in one transaction too, so a result is never missed whatever the order.
+        """
+
         def _upd(conn):
-            conn.executemany(
-                "UPDATE uploads SET request_id = ?, done_at = ? WHERE id = ?", [(request_id, done_at, i) for i in ids]
-            )
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.executemany(
+                    "UPDATE uploads SET request_id = ?, done_at = ? WHERE id = ?",
+                    [(request_id, done_at, i) for i in ids],
+                )
+                if request_id and done_at is None:
+                    seen = conn.execute(
+                        "SELECT received_at FROM webhook_events WHERE request_id = ? ORDER BY id LIMIT 1", (request_id,)
+                    ).fetchone()
+                    if seen is not None:
+                        conn.executemany(
+                            "UPDATE uploads SET done_at = ? WHERE id = ? AND done_at IS NULL",
+                            [(seen[0], i) for i in ids],
+                        )
+                conn.execute("COMMIT")
+            except BaseException:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+                raise
 
         if ids:
             await self.run(_upd)
 
-    async def finish_request_uploads(self, request_id: str, now: str) -> None:
-        await self.run(
-            lambda conn: conn.execute(
-                "UPDATE uploads SET done_at = ? WHERE request_id = ? AND done_at IS NULL", (now, request_id)
-            )
-        )
+    async def insert_event_and_finish_uploads(self, row: dict[str, Any], now: str) -> bool:
+        """Store a webhook event and close the uploads of its request in one transaction.
 
-    async def open_upload_keys(self, not_before: str) -> list[tuple[str, str]]:
+        Returns False if the event was a duplicate (uploads are closed either way).
+        """
+
+        def _tx(conn):
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                cur = conn.execute(
+                    """INSERT OR IGNORE INTO webhook_events
+                       (received_at, dedupe_key, entity_type, company_id, request_id, top_status,
+                        event_id, invoice_id, send_status, channel, occurred_at, payload)
+                       VALUES (:received_at, :dedupe_key, :entity_type, :company_id, :request_id, :top_status,
+                               :event_id, :invoice_id, :send_status, :channel, :occurred_at, :payload)""",
+                    row,
+                )
+                if row.get("request_id"):
+                    conn.execute(
+                        "UPDATE uploads SET done_at = ? WHERE request_id = ? AND done_at IS NULL",
+                        (now, row["request_id"]),
+                    )
+                conn.execute("COMMIT")
+                return cur.rowcount == 1
+            except BaseException:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+                raise
+
+        return await self.run(_tx)
+
+    async def open_upload_keys(self) -> list[tuple[str, str]]:
+        """Document keys of uploads without a result. They stay open until KROS reports or an operator resolves them."""
         return await self.run(
             lambda conn: [
                 (r[0], r[1])
+                for r in conn.execute("SELECT doc_sequence, doc_number FROM uploads WHERE done_at IS NULL").fetchall()
+            ]
+        )
+
+    async def list_open_uploads(self) -> list[dict[str, Any]]:
+        return await self.run(
+            lambda conn: [
+                dict(r)
                 for r in conn.execute(
-                    "SELECT doc_sequence, doc_number FROM uploads WHERE done_at IS NULL AND created_at > ?",
-                    (not_before,),
+                    "SELECT id, request_id, doc_sequence, doc_number, created_at FROM uploads "
+                    "WHERE done_at IS NULL ORDER BY id"
                 ).fetchall()
             ]
+        )
+
+    async def resolve_upload(self, upload_id: int, now: str) -> bool:
+        """Close an open upload by hand, after checking in KROS what happened to it."""
+        return await self.run(
+            lambda conn: (
+                conn.execute(
+                    "UPDATE uploads SET done_at = ? WHERE id = ? AND done_at IS NULL", (now, upload_id)
+                ).rowcount
+                == 1
+            )
         )
 
     async def get_approval(self, approval_id: str) -> dict[str, Any] | None:
@@ -465,7 +533,10 @@ class Database:
             counts = {
                 "webhook_events": conn.execute("DELETE FROM webhook_events WHERE received_at < ?", (cutoff,)).rowcount,
                 "audit_log": conn.execute("DELETE FROM audit_log WHERE at < ?", (cutoff,)).rowcount,
-                "uploads": conn.execute("DELETE FROM uploads WHERE created_at < ?", (cutoff,)).rowcount,
+                # Open uploads are kept until resolved, however old.
+                "uploads": conn.execute(
+                    "DELETE FROM uploads WHERE created_at < ? AND done_at IS NOT NULL", (cutoff,)
+                ).rowcount,
                 # Never purge approvals that are still in flight.
                 "approvals": conn.execute(
                     """DELETE FROM approvals WHERE created_at < ?

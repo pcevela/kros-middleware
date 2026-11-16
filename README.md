@@ -96,7 +96,6 @@ Everything is configured with environment variables. Every secret can also be re
 | `KM_APPROVAL_AUTH` | `basic` | `none` means the link alone approves; needs `KM_APPROVAL_AUTH_NONE_ACKNOWLEDGED=true` |
 | `KM_APPROVAL_TTL_HOURS` | `24` | Lifetime of an approval request |
 | `KM_APPROVAL_MAX_PENDING` | `20` | Maximum open approval requests (enforced atomically) |
-| `KM_UPLOAD_SETTLE_SECONDS` | `3600` | How long an upload without a webhook result keeps blocking approvals of that invoice |
 | `KM_APPROVAL_HASH_FIELDS` | — | Additional invoice fields (dotted paths) to bind to the approval. The default set, which covers everything the page shows, always stays bound |
 | `KM_ALLOWED_IBANS` | — | Optional allowlist of IBANs for invoices to be sent |
 | `KM_ALLOW_RULES` | GET allowlist | `METHOD /path` rules; segments `{id}`, `{word}`, `*`, `**` |
@@ -214,6 +213,21 @@ podman secret inspect --showsecret --format '{{.SecretData}}' kros-client-tokens
   | grep -v "^claude-skill:" | podman secret create --replace kros-client-tokens -
 systemctl --user restart kros-middleware
 ```
+
+### Uploads without a result
+
+An upload that overwrites an existing invoice (it names a `documentNumber`) blocks send approvals for that
+invoice until KROS reports the result by webhook. This prevents approving one version of an invoice while
+KROS is still applying another. Time alone never clears it. If KROS never delivers the webhook (for example
+because the webhook URL was unreachable), check the invoice in KROS and resolve the upload by hand:
+
+```sh
+podman exec kros-middleware kros-middleware uploads list
+podman exec kros-middleware kros-middleware uploads resolve <id> --reason "checked FA 2026001 in KROS"
+```
+
+The reason is recorded in the audit log. If the invoice in KROS is not what you expect, fix it first, and only
+then resolve the upload.
 
 ## Using it from a client
 

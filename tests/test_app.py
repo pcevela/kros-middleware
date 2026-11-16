@@ -614,3 +614,94 @@ async def test_event_limit_must_be_in_range(make_harness):
             r = await h.client.get(f"/results/events?limit={limit}", headers=h.bearer())
             assert r.status_code == 400, limit
         assert (await h.client.get("/results/events?limit=500", headers=h.bearer())).status_code == 200
+
+
+# ---------------------------------------------------------------------------- regressions from the second Codex review
+
+
+def upload_result(request_id: str) -> tuple[bytes, dict[str, str]]:
+    return signed(
+        {
+            "companyId": 1,
+            "entityType": 2,
+            "status": 200,
+            "requestId": request_id,
+            "results": {"entities": [{"index": 0, "status": 204}]},
+        }
+    )
+
+
+async def test_old_unresolved_upload_still_blocks_approval(harness: Harness):
+    # Elapsed time alone must never make an upload without a result safe.
+    await harness.app.state.core.db.add_uploads([("fa", "2026001")], "2000-01-01T00:00:00+00:00")
+    r = await request_send(harness)
+    assert r.status_code == 409 and r.json()["errorCode"] == "uploadInFlight"
+
+
+async def test_old_unresolved_upload_blocks_send_at_approval_time(harness: Harness):
+    await request_send(harness)
+    await harness.app.state.core.db.add_uploads([("fa", "2026001")], "2000-01-01T00:00:00+00:00")
+    assert (await approve(harness)).status_code == 409
+    assert not harness.kros.sends()
+
+
+async def test_webhook_before_request_id_is_recorded_still_closes_upload(harness: Harness):
+    core = harness.app.state.core
+    original = core.db.settle_uploads
+
+    async def webhook_first(ids, request_id, done_at):
+        # KROS's result webhook arrives before the forwarding code records the requestId.
+        if request_id:
+            raw, headers = upload_result(request_id)
+            assert (await harness.client.post("/webhooks/kros", content=raw, headers=headers)).status_code == 200
+        await original(ids, request_id, done_at)
+
+    core.db.settle_uploads = webhook_first
+    r = await harness.post_json("/api/invoices", {"data": {"documentNumber": "2026001", "numberingSequence": "FA"}})
+    assert r.status_code == 202
+    assert await core.db.list_open_uploads() == []
+    assert (await request_send(harness)).status_code == 202
+
+
+async def test_duplicate_webhook_still_closes_upload(harness: Harness):
+    core = harness.app.state.core
+    raw, headers = upload_result("req-dup")
+    assert (await harness.client.post("/webhooks/kros", content=raw, headers=headers)).status_code == 200
+    ids = await core.db.add_uploads([("FA", "2026001")], "2026-11-01T00:00:00+00:00")
+    await core.db.settle_uploads(ids, "req-dup", None)
+    assert await core.db.list_open_uploads() == []
+
+
+async def test_purge_keeps_open_uploads_and_resolve_closes_them(harness: Harness):
+    db = harness.app.state.core.db
+    open_id, done_id = await db.add_uploads([("FA", "1"), ("FA", "2")], "2000-01-01T00:00:00+00:00")
+    await db.settle_uploads([done_id], None, "2000-01-01T00:00:01+00:00")
+    assert (await db.purge(90))["uploads"] == 1
+    assert [u["id"] for u in await db.list_open_uploads()] == [open_id]
+    assert await db.resolve_upload(open_id, "2026-11-16T00:00:00+00:00")
+    assert not await db.resolve_upload(open_id, "2026-11-16T00:00:00+00:00")
+    assert await db.list_open_uploads() == []
+
+
+def test_uploads_cli_lists_and_resolves(tmp_path, monkeypatch, capsys):
+    import asyncio as _asyncio
+
+    from kros_middleware import __main__ as cli
+    from kros_middleware.db import Database
+
+    from .conftest import base_env
+
+    env = {**base_env(), "KM_DB_PATH": str(tmp_path / "cli.sqlite3")}
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    db = Database(env["KM_DB_PATH"])
+    db.open()
+    (upload_id,) = _asyncio.run(db.add_uploads([("FA", "2026001")], "2026-11-01T00:00:00+00:00"))
+    db.close()
+
+    assert cli.main(["uploads", "list"]) == 0
+    assert "FA 2026001" in capsys.readouterr().out
+    assert cli.main(["uploads", "resolve", str(upload_id), "--reason", "checked in KROS: overwrite applied"]) == 0
+    assert cli.main(["uploads", "resolve", str(upload_id), "--reason", "again"]) == 1
+    assert cli.main(["uploads", "list"]) == 0
+    assert "no open uploads" in capsys.readouterr().out
