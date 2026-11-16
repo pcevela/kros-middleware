@@ -705,3 +705,50 @@ def test_uploads_cli_lists_and_resolves(tmp_path, monkeypatch, capsys):
     assert cli.main(["uploads", "resolve", str(upload_id), "--reason", "again"]) == 1
     assert cli.main(["uploads", "list"]) == 0
     assert "no open uploads" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------- approval form from a real browser
+
+
+async def test_approval_page_lets_the_browser_send_its_origin(harness: Harness):
+    # "no-referrer" makes browsers send "Origin: null" on the page's own form post (found in production).
+    await request_send(harness)
+    path, token = split_link(harness.last_link())
+    r = await harness.client.get(f"{path}?token={token}", headers=harness.basic())
+    assert r.status_code == 200
+    assert r.headers["referrer-policy"] == "same-origin"
+
+
+async def test_null_origin_with_same_origin_fetch_metadata_is_accepted(harness: Harness):
+    await request_send(harness)
+    path, token = split_link(harness.last_link())
+    r = await harness.client.post(
+        f"{path}/approve",
+        data={"token": token},
+        headers={**harness.basic(), "Origin": "null", "Sec-Fetch-Site": "same-origin"},
+    )
+    assert r.status_code == 200
+    assert len(harness.kros.sends()) == 1
+
+
+async def test_cross_site_fetch_metadata_is_rejected_even_with_matching_origin(harness: Harness):
+    await request_send(harness)
+    path, token = split_link(harness.last_link())
+    for site in ("cross-site", "same-site", "none"):
+        r = await harness.client.post(
+            f"{path}/approve",
+            data={"token": token},
+            headers={**harness.basic(), "Origin": PUBLIC, "Sec-Fetch-Site": site},
+        )
+        assert r.status_code == 403, site
+    assert not harness.kros.sends()
+
+
+async def test_null_origin_without_fetch_metadata_is_rejected(harness: Harness):
+    await request_send(harness)
+    path, token = split_link(harness.last_link())
+    r = await harness.client.post(
+        f"{path}/approve", data={"token": token}, headers={**harness.basic(), "Origin": "null"}
+    )
+    assert r.status_code == 403
+    assert not harness.kros.sends()

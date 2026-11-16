@@ -13,7 +13,7 @@ ContainerName=kros-middleware
 # Published release image; pin a version. To use a local build instead:
 #   podman build --format docker -t localhost/kros-middleware:latest -f Containerfile .
 #   Image=localhost/kros-middleware:latest
-Image=ghcr.io/pcevela/kros-middleware:v0.2.1
+Image=ghcr.io/pcevela/kros-middleware:v0.2.2
 
 # Only reachable from the host; nginx terminates TLS and proxies to it.
 PublishPort=127.0.0.1:8080:8080

@@ -291,7 +291,15 @@ class Core:
         return ok_user
 
     def same_origin(self, request: Request) -> bool:
-        """Reject cross-site form posts when the browser tells us the origin."""
+        """Reject cross-site form posts.
+
+        Fetch metadata (``Sec-Fetch-Site``) is decisive when present: browsers set it and pages can't forge
+        it. Otherwise the ``Origin`` header must match the public base URL. ``Origin: null`` alone is not
+        trusted, because sandboxed and cross-site documents send it too.
+        """
+        site = request.headers.get("sec-fetch-site")
+        if site is not None:
+            return site == "same-origin"
         origin = request.headers.get("origin")
         if not origin or origin == "null":
             return origin is None
@@ -657,6 +665,9 @@ class Core:
         )
         headers = dict(SECURITY_HEADERS)
         headers["Content-Security-Policy"] = PAGE_CSP
+        # With "no-referrer" browsers send "Origin: null" on the page's own form posts, which the origin
+        # check can't tell apart from a sandboxed attacker. "same-origin" still sends nothing cross-site.
+        headers["Referrer-Policy"] = "same-origin"
         return HTMLResponse(html, status_code=status, headers=headers)
 
     async def approval_page(self, request: Request) -> Response:

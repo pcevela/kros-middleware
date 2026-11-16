@@ -128,7 +128,7 @@ Everything is configured with environment variables. Every secret can also be re
 
 1. **Get the image.** Release images are published to the GitHub Container Registry for every version tag:
    ```sh
-   podman pull ghcr.io/pcevela/kros-middleware:v0.2.1    # or :latest for the newest release
+   podman pull ghcr.io/pcevela/kros-middleware:v0.2.2    # or :latest for the newest release
    ```
    Pin a version in production. Alternatively, build it yourself from a checkout and set
    `Image=localhost/kros-middleware:latest` in the Quadlet:

@@ -1,7 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.2.2
 
+* Fix: approving or rejecting from the approval page failed with `403 crossOriginRejected` in real
+  browsers. The page's `Referrer-Policy: no-referrer` makes browsers send `Origin: null` on its own form
+  posts. The page now uses `same-origin`, and the origin check trusts `Sec-Fetch-Site` when present
+  (only `same-origin` passes), falling back to the `Origin` header.
 * Skill: always send `exchangeRate` (KROS rejects EUR invoices without it) and set a digits-only variable
   symbol (KROS copies the full number, letters included, when it is omitted). Both found in an end-to-end
   test against production.
