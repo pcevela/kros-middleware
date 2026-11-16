@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.1
 
 * Security: an upload without a KROS result keeps blocking send approvals of that invoice until the result
   webhook arrives or an operator resolves it (`python -m kros_middleware uploads list|resolve`). Previously
@@ -27,7 +27,7 @@
 * Security: the pending-approval cap is enforced in the same transaction as the insert.
 * Security: `/results/events` rejects `limit` outside 1–500 and negative `afterId`.
 
-## 0.1.0 — unreleased
+## 0.1.0
 
 First version:
 * restricting proxy to the KROS OpenAPI with scoped client tokens and route allowlists
