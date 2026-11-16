@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+* Skill: always send `exchangeRate` (KROS rejects EUR invoices without it) and set a digits-only variable
+  symbol (KROS copies the full number, letters included, when it is omitted). Both found in an end-to-end
+  test against production.
+
 ## 0.2.1
 
 * Security: an upload without a KROS result keeps blocking send approvals of that invoice until the result
