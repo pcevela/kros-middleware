@@ -142,7 +142,9 @@ Everything is configured with environment variables. Every secret can also be re
    printf 'agent:%s:read+issue+send+results\n' "km_$(openssl rand -hex 32)" | podman secret create kros-client-tokens -
    printf 'you:%s\n' "$(openssl rand -base64 33)" | podman secret create kros-approvers -
    ```
-   Keep a copy of the client token and the approver password in your password manager.
+   This creates the first client. The secret holds one `name:token:scopes` line per client; add more later as
+   described in [Issuing and revoking client tokens](#issuing-and-revoking-client-tokens). Keep a copy of the
+   client token and the approver password in your password manager.
 3. **Create the KROS connection.** In KROS Fakturácia, go to *Nastavenia firmy → API prepojenia*:
    * *Názov prepojenia*: anything recognisable
    * *URL pre príjem notifikácií*: `https://<your host>/webhooks/kros`
