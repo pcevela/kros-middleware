@@ -20,26 +20,46 @@ Never invent field or endpoint names. If something is not in the spec, say so an
 
 ## Connection
 
-Before the first request, get the base URL and the client token, in this order:
+You need the middleware **base URL** and a **client token**. They may already be provided, so look before
+you ask. Never print the token, never write it into files you deliver or commit, never put it in URLs, logs
+or commit messages, and keep it only for the current task.
 
-1. **Base URL**: `KROS_MW_URL` env var. Otherwise ask the user (e.g. `https://kros-mw.example.com`).
-2. **Token**:
-   1. the `KROS_MW_TOKEN` env var, if set;
-   2. otherwise a location the user pointed to (a file path, a secret store entry, a password manager
-      item). Read it from there, strip surrounding whitespace, and don't copy it anywhere else;
-   3. otherwise **ask the user for the token** (or where to find it) and wait. Don't guess, don't search
-      the disk or other projects for tokens, and don't continue without one.
+**Base URL**, first match wins:
 
-   Ask also when a token you found is rejected with `401 {"errorCode": "unauthorized"}`. It may be
-   wrong or revoked. Never print the token, never write it into files you deliver or commit, never put it
-   in URLs or logs, and keep it only for the current task.
+1. a URL the user gave in this conversation, or one in the project / workspace instructions
+   (for example a line `KROS_MW_URL=https://kros-mw.example.com`);
+2. the `KROS_MW_URL` environment variable;
+3. otherwise ask the user (e.g. `https://kros-mw.example.com`).
+
+**Token**, first match wins:
+
+1. **Supplied by the environment.** Check whether `KROS_MW_TOKEN` is set without printing it
+   (`[ -n "${KROS_MW_TOKEN:-}" ] && echo set`). If it is, use it.
+2. **Attached by an outbound proxy.** Some environments add the `Authorization` header outside the
+   sandbox (for example a Claude cloud environment with a network secret for the middleware host), so the
+   token is never visible to you. Probe once: `GET {base URL}/api/auth/check` **without** an
+   `Authorization` header. `200` means the proxy supplies the token: send no `Authorization` header of your
+   own from then on. A `401 {"errorCode": "unauthorized"}` means nothing was attached; go on.
+3. **Given by the user in this conversation** (or in project instructions). Write it once into a private
+   temporary file outside the working directory (`umask 077`, e.g. `${TMPDIR:-/tmp}/kros-mw-token`), read
+   it with `KROS_MW_TOKEN=$(cat …)` in each command (shell variables often don't survive between
+   commands), never repeat the value, and delete the file when the task is done.
+4. **A location the user pointed to** (a file path, a secret store entry, a password manager item). Read it
+   from there into `KROS_MW_TOKEN` in each command that needs it, strip surrounding whitespace, and don't
+   copy it anywhere else.
+5. Otherwise **ask the user for the token, or where to find it**, and wait. Don't guess, don't search the
+   disk, environment dumps or other projects for tokens, and don't continue without one.
+
+Ask also when a token is rejected with `401 {"errorCode": "unauthorized"}`: it may be wrong or revoked.
+If the probe in step 2 succeeded and calls later return `401`, the environment's secret is wrong; tell the
+user, since you can't fix it yourself.
 
 Every request needs:
 
 ```
-Authorization: Bearer $KROS_MW_TOKEN
-User-Agent: kros-agent/1.0          # Cloudflare in front of the middleware blocks default library user agents
-Content-Type: application/json      # for bodies
+Authorization: Bearer $KROS_MW_TOKEN   # omit when the proxy attaches it (step 2)
+User-Agent: kros-agent/1.0             # Cloudflare in front of the middleware may block default library user agents
+Content-Type: application/json         # for bodies
 Accept: application/json
 ```
 

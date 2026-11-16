@@ -168,10 +168,50 @@ Everything is configured with environment variables. Every secret can also be re
 
 ### Rotating secrets
 
-* **Client token:** add a second entry under another name, switch the client, remove the old entry, restart.
+* **Client token:** issue a new one under another name (below), switch the client, revoke the old one.
 * **Webhook secret:** set the old one as `KM_WEBHOOK_SECRET_PREVIOUS`, put the new one in KROS and in
   `KM_WEBHOOK_SECRET`, restart, and later remove the previous one.
 * **KROS token:** reset the connection in KROS and replace the `kros-upstream-token` secret.
+
+### Issuing and revoking client tokens
+
+Client tokens live in the `kros-client-tokens` Podman secret, one `name:secret:scopes` line per client.
+Scopes are `read`, `issue`, `send` and `results`, joined with `+`. Give every client its own token, with only
+the scopes it needs. Store the token as `sha256$<hex>`: the server then holds only the hash, and the token
+itself exists only in your password manager and in the client.
+
+Run this as the user that runs the container (with systemd user sessions, e.g. `sudo machinectl shell <user>@`).
+`--replace` needs Podman 4.7 or later.
+
+```sh
+NAME=claude-skill              # letters, digits, . _ - (unique)
+SCOPES=read+issue+results      # see the skill README for suggestions
+
+TOKEN="km_$(openssl rand -hex 32)"
+{ podman secret inspect --showsecret --format '{{.SecretData}}' kros-client-tokens
+  printf '%s:sha256$%s:%s\n' "$NAME" "$(printf '%s' "$TOKEN" | sha256sum | cut -d' ' -f1)" "$SCOPES"
+} | podman secret create --replace kros-client-tokens -
+systemctl --user restart kros-middleware
+
+# names and scopes only (no secrets on screen)
+podman secret inspect --showsecret --format '{{.SecretData}}' kros-client-tokens | grep -v '^#' | cut -d: -f1,3
+
+curl -fsS -A kros-agent/1.0 -H "Authorization: Bearer $TOKEN" https://<your host>/api/auth/check
+
+printf '%s\n' "$TOKEN"   # copy it into your password manager or the client's secret store
+unset TOKEN; clear
+```
+
+If the service doesn't come back, `journalctl --user -u kros-middleware` names the invalid line. Duplicate
+names, short secrets and unknown scopes are rejected at startup.
+
+To revoke a token, remove its line and restart:
+
+```sh
+podman secret inspect --showsecret --format '{{.SecretData}}' kros-client-tokens \
+  | grep -v "^claude-skill:" | podman secret create --replace kros-client-tokens -
+systemctl --user restart kros-middleware
+```
 
 ## Using it from a client
 
@@ -219,7 +259,10 @@ Give the job its own client token with `read+issue+send+results`, and set `KM_IS
 `skills/kros-invoicing/SKILL.md` teaches an AI agent (Claude Code, Claude) to use this middleware: create an
 invoice from details the user gives, read invoices, modify invoices that were not sent yet (full overwrite
 with the exact response→upload field mapping), and request sending through the approval flow. Copy the folder
-into `.claude/skills/` (or `~/.claude/skills/`) and set `KROS_MW_URL` and `KROS_MW_TOKEN`.
+into `.claude/skills/` (or `~/.claude/skills/`), or upload it to your Claude account. The skill needs `KROS_MW_URL` and
+a client token. [skills/kros-invoicing/README.md](skills/kros-invoicing/README.md) shows how to provide them
+in Claude Code (local), Claude Code cloud sessions and scheduled tasks (environment variables and network
+secrets), and the Claude apps (chat, Projects, Cowork), and which token scopes to use for each.
 
 ## Security notes
 

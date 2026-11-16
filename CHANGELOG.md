@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+* Skill: looks for an existing URL and token before asking (project instructions, `KROS_MW_URL` /
+  `KROS_MW_TOKEN`, a token attached by an outbound proxy such as a Claude network secret), and never repeats
+  a pasted token in commands.
+* Docs: `skills/kros-invoicing/README.md` covers installing the skill and providing the URL and token in
+  Claude Code, cloud sessions and scheduled tasks, and the Claude apps; the README covers issuing and
+  revoking hashed client tokens.
+
 ## 0.2.0
 
 * New: `tools/kros_recurring.py`, a recurring monthly invoicing job with a crash-safe journal, number and
